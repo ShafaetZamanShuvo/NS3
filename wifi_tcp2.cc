@@ -63,14 +63,14 @@ using namespace ns3;
 Ptr<PacketSink> sink;     /* Pointer to the packet sink application */
 uint64_t lastTotalRx = 0; /* The value of the last total received bytes */
 
-// void CalculateThroughput()
-// {
-//     Time now = Simulator::Now();                                       /* Return the simulator's virtual time. */
-//     double cur = (sink->GetTotalRx() - lastTotalRx) * (double)8 / 1e5; /* Convert Application RX Packets to MBits. */
-//     std::cout << now.GetSeconds() << "s: \t" << cur << " Mbit/s" << std::endl;
-//     lastTotalRx = sink->GetTotalRx();
-//     Simulator::Schedule(MilliSeconds(100), &CalculateThroughput);
-// }
+void CalculateThroughput()
+{
+    Time now = Simulator::Now();                                       /* Return the simulator's virtual time. */
+    double cur = (sink->GetTotalRx() - lastTotalRx) * (double)8 / 1024; /* Convert Application RX Packets to KBits. */
+    std::cout << now.GetSeconds() << "s: \t" << cur << " Kbit/s" << std::endl;
+    lastTotalRx = sink->GetTotalRx();
+    Simulator::Schedule(MilliSeconds(100), &CalculateThroughput);
+}
 
 int main(int argc, char *argv[])
 {
@@ -82,11 +82,13 @@ int main(int argc, char *argv[])
     bool pcapTracing = false;              /* PCAP Tracing is enabled or not. */
 
     uint32_t nWifi = 5;
+    //uint32_t pps = 500;
     int num_half_flow = 4;
     uint32_t SentPackets = 0;
     uint32_t ReceivedPackets = 0;
     uint32_t LostPackets = 0;
 
+    // ./waf --run scratch/wifi_tcp2 --payloadSize=2048
     /* Command line argument parser setup. */
     CommandLine cmd(__FILE__);
     cmd.AddValue("payloadSize", "Payload size in bytes", payloadSize);
@@ -124,7 +126,7 @@ int main(int argc, char *argv[])
 
     PointToPointHelper pointToPoint;
     pointToPoint.SetDeviceAttribute("DataRate", StringValue("100Mbps"));
-    pointToPoint.SetChannelAttribute("Delay", StringValue("30ms"));
+    pointToPoint.SetChannelAttribute("Delay", StringValue("10ms"));
     // pointToPoint.SetQueue("ns3::DropTailQueue");
 
     NetDeviceContainer p2pDevices;
@@ -258,7 +260,7 @@ int main(int argc, char *argv[])
         sinkApp.Start(Seconds(0.0));
         serverApp.Start(Seconds(1.0));
     }
-    // Simulator::Schedule(Seconds(1.1), &CalculateThroughput);
+    Simulator::Schedule(Seconds(1.1), &CalculateThroughput);
 
     /* Enable Traces */
     if (pcapTracing)
@@ -318,14 +320,14 @@ int main(int argc, char *argv[])
     NS_LOG_UNCOND("Total Flow " << j);
     monitor->SerializeToXmlFile("manet-routing.xml", true, true);
 
-    double averageThroughput = ((sink->GetTotalRx() * 8) / (1e6 * simulationTime));
+    double averageThroughput = ((sink->GetTotalRx() * 8) / (1024 * simulationTime));
 
     // if (averageThroughput < 50)
     // {
     //     NS_LOG_ERROR("Obtained throughput is not in the expected boundaries!");
     //     exit(1);
     // }
-    std::cout << "\nAverage throughput: " << averageThroughput << " Mbit/s" << std::endl;
+    std::cout << "\nAverage throughput: " << averageThroughput << " Kbit/s" << std::endl;
 
     Simulator::Destroy();
 

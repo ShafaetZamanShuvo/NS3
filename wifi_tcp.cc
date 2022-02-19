@@ -27,6 +27,8 @@
 #include "ns3/yans-wifi-helper.h"
 #include "ns3/ssid.h"
 #include "ns3/on-off-helper.h"
+#include "ns3/flow-monitor-helper.h"
+#include "ns3/flow-monitor-module.h"
 
 using namespace ns3;
 
@@ -169,8 +171,8 @@ void MyApp::SendPacket(void)
 {
   Ptr<Packet> packet = Create<Packet>(m_packetSize);
   m_socket->Send(packet);
-
-  if (++m_packetsSent < m_nPackets)
+  Time now = Simulator::Now();
+  if (now.GetSeconds() < 20)
   {
     ScheduleTx();
   }
@@ -185,30 +187,59 @@ void MyApp::ScheduleTx(void)
   }
 }
 
-static void
-CwndChange(Ptr<OutputStreamWrapper> stream, uint32_t oldCwnd, uint32_t newCwnd)
-{
-  NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "\t" << oldCwnd<< "\t" << newCwnd);
-  *stream->GetStream() << Simulator::Now().GetSeconds() << "\t" << oldCwnd << "\t" << newCwnd << std::endl;
-}
-
 // static void
-// RxDrop(Ptr<PcapFileWrapper> file, Ptr<const Packet> p)
+// CwndChange(Ptr<OutputStreamWrapper> stream, uint32_t oldCwnd, uint32_t newCwnd)
 // {
-//   NS_LOG_UNCOND("RxDrop at " << Simulator::Now().GetSeconds());
-//   file->Write(Simulator::Now(), p);
+//    NS_LOG_UNCOND(Simulator::Now().GetSeconds() << "\t" << oldCwnd << "\t" << newCwnd);
+//   *stream->GetStream() << Simulator::Now().GetSeconds() << " " << oldCwnd << " " << newCwnd<< std::endl;
 // }
+
+ApplicationContainer sinks;      /* Pointer to the packet sink application */
+uint64_t lastTotalRx[100]; /* The value of the last total received bytes */
+
+Ptr<OutputStreamWrapper> throughputStream[100];
+
+void CalculateThroughput()
+{
+  for (uint32_t i = 0; i < sinks.GetN(); i++)
+  {
+    Ptr<PacketSink> sink;
+    sink = StaticCast<PacketSink> (sinks.Get(i));
+    Time now = Simulator::Now();                                        /* Return the simulator's virtual time. */
+    double cur = (sink->GetTotalRx() - lastTotalRx[i]) * (double)8 / 1024; /* Convert Application RX Packets to KBits. */
+    if(cur != 0)
+    *throughputStream[i]->GetStream() << Simulator::Now().GetSeconds() << "		" << cur << std::endl;
+     std::cout << now.GetSeconds() << "s: \t" << cur << " Kbit/s" << std::endl;
+    lastTotalRx[i] = sink->GetTotalRx();
+  }
+
+  Simulator::Schedule(MilliSeconds(500), &CalculateThroughput);
+}
 
 int main(int argc, char *argv[])
 {
-  // bool useV6 = false;
+  // Config::SetDefault ("ns3::TcpL4Protocol::SocketType", StringValue ("ns3::TcpNewAIMD"));
+  //  bool useV6 = false;
   bool verbose = true;
 
   CommandLine cmd(__FILE__);
   // cmd.AddValue("useIpv6", "Use Ipv6", useV6);
   cmd.Parse(argc, argv);
 
-  uint32_t nWifi = 4;
+  uint32_t txArea = 5;
+  uint32_t nWifi = 8;
+  uint32_t pps = 500;
+  uint32_t p_size = 128;
+  std::string dataRate = std::to_string((8 * pps * p_size) / 1024) + "kbps";
+  uint32_t SentPackets = 0;
+  uint32_t ReceivedPackets = 0;
+  uint32_t LostPackets = 0;
+  int num_half_flows = 8;
+  AsciiTraceHelper graph;
+  for(int i = 0; i < num_half_flows; i++){
+	  std::string num = std::to_string(i);
+	  throughputStream[i] = graph.CreateFileStream("throughput" + num);
+  }
 
   if (nWifi > 18)
   {
@@ -239,13 +270,7 @@ int main(int argc, char *argv[])
   em->SetAttribute("ErrorRate", DoubleValue(0.00001));
   p2pDevices.Get(0)->SetAttribute("ReceiveErrorModel", PointerValue(em));
 
-  // Ptr<RateErrorModel> em = CreateObject<RateErrorModel>();
-  // em->SetAttribute("ErrorRate", DoubleValue(0.00001));
   p2pDevices.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(em));
-
-  // Ptr<RateErrorModel> em1 = CreateObject<RateErrorModel>();
-  // em1->SetAttribute("ErrorRate", DoubleValue(0.00001));
-  // p2pDevices.Get(1)->SetAttribute("ReceiveErrorModel1", PointerValue(em1));
 
   NodeContainer wifiStaNodes0;
   wifiStaNodes0.Create(nWifi);
@@ -256,14 +281,16 @@ int main(int argc, char *argv[])
   NodeContainer wifiApNode1 = p2pNodes.Get(1);
 
   YansWifiChannelHelper channel0 = YansWifiChannelHelper::Default();
+  channel0.AddPropagationLoss("ns3::RangePropagationLossModel", "MaxRange", DoubleValue(10.0 * txArea));
   YansWifiPhyHelper phy0;
   phy0.SetChannel(channel0.Create());
-  //phy0.SetErrorRateModel("ns3::YansErrorRateModel");
+  // phy0.SetErrorRateModel("ns3::YansErrorRateModel");
 
   YansWifiChannelHelper channel1 = YansWifiChannelHelper::Default();
+  channel1.AddPropagationLoss("ns3::RangePropagationLossModel", "MaxRange", DoubleValue(10.0 * txArea));
   YansWifiPhyHelper phy1;
   phy1.SetChannel(channel1.Create());
- // phy1.SetErrorRateModel("ns3::YansErrorRateModel");
+  // phy1.SetErrorRateModel("ns3::YansErrorRateModel");
 
   WifiHelper wifi0;
   wifi0.SetRemoteStationManager("ns3::AarfWifiManager");
@@ -311,30 +338,25 @@ int main(int argc, char *argv[])
                                 "GridWidth", UintegerValue(3),
                                 "LayoutType", StringValue("RowFirst"));
 
-  // mobility.SetMobilityModel ("ns3::RandomWalk2dMobilityModel",
-  //"Bounds", RectangleValue (Rectangle (-50, 50, -50, 50)));
   mobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+
   mobility.Install(wifiStaNodes0);
   mobility.Install(wifiStaNodes1);
-
-  // mobility.SetMobilityModel ("ns3::ConstantPositionMobilityModel");
   mobility.Install(wifiApNode0);
   mobility.Install(wifiApNode1);
 
   InternetStackHelper stack;
   stack.Install(p2pNodes);
 
-  // Ipv4StaticRoutingHelper staticRoutingHelper;
-  // stack.SetRoutingHelper (staticRoutingHelper);
-
   stack.Install(wifiStaNodes0);
   stack.Install(wifiStaNodes1);
+
+  FlowMonitorHelper flowmon;
+  Ptr<FlowMonitor> monitor = flowmon.InstallAll();
 
   uint16_t sinkPort = 8080;
   Address sinkAddress;
   Address anyAddress;
-  std::string probeType;
-  std::string tracePath;
 
   Ipv4AddressHelper address;
 
@@ -354,80 +376,79 @@ int main(int argc, char *argv[])
 
   Ipv4GlobalRoutingHelper::PopulateRoutingTables();
 
-  int num_half_flows = 1;
-  for (int i = 0; i < num_half_flows; i++){
+  for (int i = 0; i < num_half_flows; i++)
+  {
 
     sinkAddress = InetSocketAddress(wifiInterfaces0.GetAddress(i), sinkPort);
-  anyAddress = InetSocketAddress(Ipv4Address::GetAny(), sinkPort);
-  probeType = "ns3::Ipv4PacketProbe";
-  tracePath = "/NodeList/*/$ns3::Ipv4L3Protocol/Tx";
+    anyAddress = InetSocketAddress(Ipv4Address::GetAny(), sinkPort);
 
-  PacketSinkHelper packetSinkHelper("ns3::TcpSocketFactory", anyAddress);
-  ApplicationContainer sinkApps = packetSinkHelper.Install(wifiStaNodes0.Get(i));
-  sinkApps.Start(Seconds(0.));
-  sinkApps.Stop(Seconds(20.));
+    PacketSinkHelper packetSinkHelper("ns3::TcpSocketFactory", anyAddress);
+    ApplicationContainer sinkApps = packetSinkHelper.Install(wifiStaNodes0.Get(i));
 
-  Ptr<Socket> ns3TcpSocket = Socket::CreateSocket(wifiStaNodes1.Get(i), TcpSocketFactory::GetTypeId());
+    sinks.Add(StaticCast<PacketSink> (sinkApps.Get (0)));
+    sinkApps.Start(Seconds(0.));
+    sinkApps.Stop(Seconds(10.));
 
-  Ptr<MyApp> app = CreateObject<MyApp>();
-  app->Setup(ns3TcpSocket, sinkAddress, 1040, 1000, DataRate("1Mbps"));
-  wifiStaNodes1.Get(0)->AddApplication(app);
-  app->SetStartTime(Seconds(1.));
-  app->SetStopTime(Seconds(20.));
+    Ptr<Socket> ns3TcpSocket = Socket::CreateSocket(wifiStaNodes1.Get(i), TcpSocketFactory::GetTypeId());
 
-  AsciiTraceHelper asciiTraceHelper;
-  Ptr<OutputStreamWrapper> stream = asciiTraceHelper.CreateFileStream("seventh.cwnd");
-  ns3TcpSocket->TraceConnectWithoutContext("CongestionWindow", MakeBoundCallback(&CwndChange, stream));
+    Ptr<MyApp> app = CreateObject<MyApp>();
+    app->Setup(ns3TcpSocket, sinkAddress, p_size, 1000, DataRate(dataRate)); // packets per second = (1040*2000)/10^6
+    wifiStaNodes1.Get(i)->AddApplication(app);
+    app->SetStartTime(Seconds(1.));
+    app->SetStopTime(Seconds(11.));
 
- 
-
+    Simulator::Schedule(Seconds(1.1), &CalculateThroughput);
   }
 
-  //  PcapHelper pcapHelper;
-  // Ptr<PcapFileWrapper> file0 = pcapHelper.CreateFile("seventh0.pcap", std::ios::out, PcapHelper::DLT_PPP);
-  // p2pDevices.Get(0)->TraceConnectWithoutContext("PhyRxDrop", MakeBoundCallback(&RxDrop, file0));
-  //  Ptr<PcapFileWrapper> file1 = pcapHelper.CreateFile("seventh1.pcap", std::ios::out, PcapHelper::DLT_PPP);
-  // p2pDevices.Get(1)->TraceConnectWithoutContext("PhyRxDrop", MakeBoundCallback(&RxDrop, file1));
-  
-  // // Use GnuplotHelper to plot the packet byte count over time
-  // GnuplotHelper plotHelper;
+  Simulator::Stop(Seconds(10));
 
-  // // Configure the plot.  The first argument is the file name prefix
-  // // for the output files generated.  The second, third, and fourth
-  // // arguments are, respectively, the plot title, x-axis, and y-axis labels
-  // plotHelper.ConfigurePlot("seventh-packet-byte-count",
-  //                          "Packet Byte Count vs. Time",
-  //                          "Time (Seconds)",
-  //                          "Packet Byte Count");
-
-  // // Specify the probe type, trace source path (in configuration namespace), and
-  // // probe output trace source ("OutputBytes") to plot.  The fourth argument
-  // // specifies the name of the data series label on the plot.  The last
-  // // argument formats the plot by specifying where the key should be placed.
-  // plotHelper.PlotProbe(probeType,
-  //                      tracePath,
-  //                      "OutputBytes",
-  //                      "Packet Byte Count",
-  //                      GnuplotAggregator::KEY_BELOW);
-
-  // // Use FileHelper to write out the packet byte count over time
-  // FileHelper fileHelper;
-
-  // // Configure the file to be written, and the formatting of output data.
-  // fileHelper.ConfigureFile("seventh-packet-byte-count",
-  //                          FileAggregator::FORMATTED);
-
-  // // Set the labels for this formatted output file.
-  // fileHelper.Set2dFormat("Time (Seconds) = %.3e\tPacket Byte Count = %.0f");
-
-  // // Specify the probe type, trace source path (in configuration namespace), and
-  // // probe output trace source ("OutputBytes") to write.
-  // fileHelper.WriteProbe(probeType,
-  //                       tracePath,
-  //                       "OutputBytes");
-  
-  Simulator::Stop(Seconds(20));
   Simulator::Run();
+
+  int j = 0;
+  float AvgThroughput = 0;
+  Time Jitter;
+  Time Delay;
+
+  Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier>(flowmon.GetClassifier());
+  std::map<FlowId, FlowMonitor::FlowStats> stats = monitor->GetFlowStats();
+
+  for (std::map<FlowId, FlowMonitor::FlowStats>::const_iterator iter = stats.begin(); iter != stats.end(); ++iter)
+  {
+    Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(iter->first);
+
+    NS_LOG_UNCOND("----Flow ID:" << iter->first);
+    NS_LOG_UNCOND("Src Addr" << t.sourceAddress << "Dst Addr " << t.destinationAddress);
+    NS_LOG_UNCOND("Sent Packets=" << iter->second.txPackets);
+    NS_LOG_UNCOND("Received Packets =" << iter->second.rxPackets);
+    NS_LOG_UNCOND("Lost Packets =" << iter->second.txPackets - iter->second.rxPackets);
+    NS_LOG_UNCOND("Packet delivery ratio =" << iter->second.rxPackets * 100 / iter->second.txPackets << "%");
+    NS_LOG_UNCOND("Packet loss ratio =" << (iter->second.txPackets - iter->second.rxPackets) * 100 / iter->second.txPackets << "%");
+    NS_LOG_UNCOND("Delay =" << iter->second.delaySum);
+    NS_LOG_UNCOND("Jitter =" << iter->second.jitterSum);
+    NS_LOG_UNCOND("Throughput =" << iter->second.rxBytes * 8.0 / (iter->second.timeLastRxPacket.GetSeconds() - iter->second.timeFirstTxPacket.GetSeconds()) / 1024 << "Kbps");
+
+    SentPackets = SentPackets + (iter->second.txPackets);
+    ReceivedPackets = ReceivedPackets + (iter->second.rxPackets);
+    LostPackets = LostPackets + (iter->second.txPackets - iter->second.rxPackets);
+    AvgThroughput = AvgThroughput + (iter->second.rxBytes * 8.0 / (iter->second.timeLastRxPacket.GetSeconds() - iter->second.timeFirstTxPacket.GetSeconds()) / 1024);
+    Delay = Delay + (iter->second.delaySum);
+    Jitter = Jitter + (iter->second.jitterSum);
+
+    j = j + 1;
+  }
+
+  AvgThroughput = AvgThroughput / j;
+  NS_LOG_UNCOND("--------Total Results of the simulation----------" << std::endl);
+  NS_LOG_UNCOND("Total sent packets  =" << SentPackets);
+  NS_LOG_UNCOND("Total Received Packets =" << ReceivedPackets);
+  NS_LOG_UNCOND("Total Lost Packets =" << LostPackets);
+  NS_LOG_UNCOND("Packet Loss ratio =" << ((LostPackets * 100) / SentPackets) << "%");
+  NS_LOG_UNCOND("Packet delivery ratio =" << ((ReceivedPackets * 100) / SentPackets) << "%");
+  NS_LOG_UNCOND("Average Throughput =" << AvgThroughput << "Kbps");
+  NS_LOG_UNCOND("End to End Delay =" << Delay);
+  NS_LOG_UNCOND("End to End Jitter delay =" << Jitter);
+  NS_LOG_UNCOND("Total Flow " << j);
+  // monitor->SerializeToXmlFile("wifi_tcp.xml", true, true);
   Simulator::Destroy();
 
   return 0;
